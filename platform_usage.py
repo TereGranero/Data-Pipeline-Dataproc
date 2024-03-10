@@ -1,61 +1,104 @@
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
+from google.cloud import storage
+import json
+
 """
-Generates two monthly reports of resources duration usage of platform:  
+Generates two monthly reports about platform usage by resource:  
 one by country and one by time zone. 
 Stores them in Cloud Storage 
 in Parquet
 """
-#-------------------------- IMPORT LIBRARIES ----------------------------------
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
+# ------------------------------ SOME DATA ------------------------------------
+
+reports_bucket_name = "usage-platform-report-big-3 "
+events_bucket_name = "events-stripe-big-3"
+
+
+# --------------------------- SOME FUNCTIONS ----------------------------------
+
+def get_events(spark, events_bucket_name):
+    """Get events from Cloud Storage
+
+    Args:
+        events_bucket_name (str): bucket name
+ 
+    Returns:
+        Spark Dataframe: events from Storage
+    """
+    
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(events_bucket_name)
+    blobs = bucket.list_blobs(prefix="events/")
+    events = []
+    for blob in blobs:
+        event_data = blob.download_as_string()
+        events.append(json.loads(event_data))
+        
+    events_schema = StructType([
+        StructField("eventId", StringType(), True),
+        StructField("eventTime", StringType(), True),
+        StructField("processTime", StringType(), True),
+        StructField("resourceId", StringType(), True),
+        StructField("userId", StringType(), True),
+        StructField("countryCode", StringType(), True),
+        StructField("duration", IntegerType(), True),
+        StructField("itemPrice", StringType(), True)
+    ])
+
+    df = spark.createDataFrame(events, schema = events_schema)
+    
+    return df
+
+
+def clean_events(df):
+    """Select columns of interest for the report,
+    extract month and timeZone to columns
+    in events spark dataframe
+
+    Args:
+        df (Spark Dataframe): events obtained from Storage
+        
+    Returns:
+        Spark Dataframe: events ready to process
+    """
+
+    # Select columns of interest 
+    df = df.select(F.col("eventId"), 
+                   F.col("eventTime"), 
+                   F.col("resourceId"),
+                   F.col("countryCode"),
+                   F.col("duration"))
+
+    # Extract month from 'eventTime' column
+    df = df.withColumn("month", 
+                       F.substring(F.col("eventTime"), 1, 7))
+        
+    # Extract timezone from 'eventTime' column
+    df = df.withColumn("timeZone", 
+                       F.substring(F.col("eventTime"), 20, 6))
+  
+    return df
 
 
 #------------------------- START SPARK SESSION --------------------------------
 
 spark = SparkSession.builder.master("local")\
-    .appName("top10")\
+    .appName("platform_usage")\
     .getOrCreate()
 
 
-#----------------------------- LOAD DATA --------------------------------------
 
-# Define event schema
-events_schema = StructType([
-    StructField("eventId", StringType(), True),
-    StructField("eventTime", StringType(), True),
-    StructField("processTime", StringType(), True),
-    StructField("resourceId", StringType(), True),
-    StructField("userId", StringType(), True),
-    StructField("countryCode", StringType(), True),
-    StructField("duration", IntegerType(), True),
-    StructField("itemPrice", StringType(), True)
-])
+# ------------------------------- GET DATA  -----------------------------------
 
-# Load JSONL data into Spark DataFrame
-events_df = spark.read.json("data/eventos.jsonl", schema=events_schema)
-
-# Register table alias to allow SQL use
-events_df.createOrReplaceTempView("events")
-
-# Select the columns we need
-events_df = spark.sql("SELECT eventId, eventTime, resourceId, countryCode, duration from events")
+# Get events from Storage
+events_storage_df = get_events(spark, events_bucket_name)
+events_df = clean_events(events_storage_df)
 
 
-#-------------------------- EXTRACT SOME DATA ---------------------------------
-
-# Extract month from 'eventTime' column
-events_df = events_df\
-    .withColumn("month", F.substring(F.col("eventTime"), 1, 7))
-    
-# Extract timezone from 'eventTime' column
-events_df = events_df\
-    .withColumn("timeZone", F.substring(F.col("eventTime"), 20, 6))
-
-
-
-#--------------------------------- UDFS ---------------------------------------
+#--------------------------------- UDFs ---------------------------------------
 
 # UDF to calculate resource total usage vs. all resources total usage in % 
 spark.udf.register('usage_percent_total_udf', 
@@ -64,7 +107,12 @@ spark.udf.register('usage_percent_total_udf',
                    DoubleType())
 
 
-#------------------------------ CALCULATIONS ----------------------------------
+
+
+#--------------------------- PROCESS DATA -------------------------------------
+
+# Register table alias to allow SQL use
+events_df.createOrReplaceTempView("events")
 
 # Sum duration by month and resourceId -> totalDurationResource
 grouped_df = events_df\
@@ -73,7 +121,9 @@ grouped_df = events_df\
 
 # Join the DataFrame with the totalDurationResource column
 monthly_resources_usage_df = events_df\
-    .join(grouped_df, on=["month", "resourceId"], how="left")\
+    .join(grouped_df, 
+          on=["month", "resourceId"], 
+          how="left")\
 
 
 
@@ -84,7 +134,9 @@ total_duration_all_df = monthly_resources_usage_df\
 
 # Join the DataFrame with the totalDurationAll column
 monthly_resources_usage_df = monthly_resources_usage_df.\
-    join(total_duration_all_df, on="month", how="left")
+    join(total_duration_all_df, 
+         on="month", 
+         how="left")
     
 
 # Sum duration by month, country and resourceId -> totalDurationResourceByCountry
@@ -94,7 +146,9 @@ grouped_country_df = monthly_resources_usage_df\
 
 # Join the DataFrame with the totalDurationResourceByCountry column
 monthly_resources_usage_df = monthly_resources_usage_df\
-    .join(grouped_country_df, on=["month", "countryCode", "resourceId"], how="left")
+    .join(grouped_country_df, 
+          on=["month", "countryCode", "resourceId"], 
+          how="left")
     
 
 # Sum all totalDurationResource by month and country -> totalDurationResourceAllByCountry
@@ -104,7 +158,9 @@ grouped_country_all_df = monthly_resources_usage_df\
 
 # Join the DataFrame with the totalDurationResourceAllByCountry column
 monthly_resources_usage_df = monthly_resources_usage_df\
-    .join(grouped_country_all_df, ["month", "countryCode"], how="left")
+    .join(grouped_country_all_df, 
+          on=["month", "countryCode"], 
+          how="left")
 
 
 # Sum duration by month, timeZone and resourceId -> totalDurationResourceByZone
@@ -114,7 +170,9 @@ grouped_zone_df = monthly_resources_usage_df\
 
 # Join the DataFrame with the totalDurationResourceByZone column
 monthly_resources_usage_df = monthly_resources_usage_df\
-    .join(grouped_zone_df, on=["month", "timeZone", "resourceId"], how="left")
+    .join(grouped_zone_df, 
+          on=["month", "timeZone", "resourceId"], 
+          how="left")
 
 
 # Sum all totalDurationResource by month and time zone -> totalDurationResourceAllByZone
@@ -123,7 +181,10 @@ grouped_zone_all_df = monthly_resources_usage_df\
     .agg(F.sum("duration").alias("totalDurationResourceAllByZone"))
 
 # Join the DataFrame with the totalDurationResourceAllByCountry column
-monthly_resources_usage_df = monthly_resources_usage_df.join(grouped_zone_all_df, ["month", "timeZone"], how="left")
+monthly_resources_usage_df = monthly_resources_usage_df\
+    .join(grouped_zone_all_df, 
+          on=["month", "timeZone"], 
+          how="left")
 
 
 
@@ -170,18 +231,14 @@ for one_month in month_list:
 
     # Two monthly reports are generated
     report_file_name_country = f'usage_country_{one_month}_report.parquet'
-    output_country_df.write.mode("overwrite").parquet(report_file_name_country)
+    output_country_df.write.mode("overwrite")\
+        .parquet(f"gs://{reports_bucket_name}/country/{report_file_name_country}")
 
     report_file_name_zone = f'usage_zone_{one_month}_report.parquet'
-    output_zone_df.write.mode("overwrite").parquet(report_file_name_zone)
+    output_zone_df.write.mode("overwrite")\
+        .parquet(f"gs://{reports_bucket_name}/timezone/{report_file_name_zone}")
     
-    """
-    report_file_name_country = f'usage_country_{one_month}_report.csv'
-    output_country_df.write.csv(report_file_name_country, sep="|", header=True, mode="overwrite")
 
-    report_file_name_zone = f'usage_zone_{one_month}_report.csv'
-    output_zone_df.write.csv(report_file_name_zone, sep="|", header=True, mode="overwrite")
-    """
 
 # ------------------------------ STOP SPARK SESSION ---------------------------
 

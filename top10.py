@@ -193,26 +193,6 @@ def clean_events(df):
 
 
 
-def upload_to_gcs(bucket_name, file_name, storage_file_name):
-    """Upload report csv file to Google Cloud Storage
-
-    Args:
-        file (str): "path/to/your/local/file.csv" file name to upload
-        storage_file_name (str): "destination/folder/yourfile.csv"
-        
-    """
-    
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-
-    # Create a new blob object
-    blob = bucket.blob(storage_file_name)
-
-    # Upload the file
-    blob.upload_from_filename(file_name)
-
-
-
 # -------------------- START SPARK SESSION ------------------------------------
 
 spark = SparkSession.builder.master("local")\
@@ -289,15 +269,14 @@ for one_day in date_list:
 
     # One report by day is generated in CSV
     report_file_name = f'top10_{one_day}_report.csv'
-    output_df.write.csv(report_file_name, 
-                        sep="|", 
-                        header=True, 
-                        mode="overwrite")
     
-    # Destination name in GCS
-    destination_blob_name = upload_to_gcs(reports_bucket_name, 
-                                          report_file_name + "/part-00000", 
-                                          destination_blob_name)
+    # Write DataFrame to CSV format in Cloud Storage
+    output_df.write \
+        .option("header", "true") \
+        .option("sep", "|") \
+        .mode("overwrite") \
+        .csv(f"gs://{reports_bucket_name}/{report_file_name}")
+
     
 
 # ------------------------------- STOP SPARK SESSION --------------------------
