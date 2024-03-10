@@ -2,101 +2,279 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from google.cloud import storage
+from google.cloud import firestore
+import requests
+import json
 
 """
-Generar mediante Spark un informe diario 
-de los 10 artículos más ventas 
-por día y por categoría. 
+Generates using Spark a dialy report 
+of the top 10 best-selling resources in each category
 
-Guardar en un bucket de Cloud Storage en formato CSV
-con la siguiente estructura:
+Resources info in FireStore
+Events info in Storage
+
+In case there are events from several days
+one report by day will be generated
+
+Reports are stored in csv files in Google Cloud Storage
+with this schema:
 position|date|categoryId|categoryName|resourceId|resourceName
 
-La definición de las categorías puede extraerse de 
-http://singularity.luisbelloch.es/v1/stripe/categories al inicio del proceso.
 """
 
-# Start Spark session
+# ------------------------------ SOME DATA ------------------------------------
+
+categories_url = "https://singularity.luisbelloch.es/v1/stripe/categories"
+reports_bucket_name = "top-10-resources-diary-report-big-3"
+events_bucket_name = "events-stripe-big-3"
+
+
+# --------------------------- SOME FUNCTIONS ----------------------------------
+
+def get_categories(spark, url):
+    """Get categories content from URL
+
+    Args:
+        spark (Spark session): Spark session
+        url (str): URL to get the information
+
+    Returns:
+        Spark DataFrame: Categories content from URL
+    """
+       
+    response = requests.get(url)
+    data = response.json()
+    content = data["content"]
+    
+    categories_schema = StructType([
+        StructField("tenant", StringType(), True),
+        StructField("id", StringType(), True),
+        StructField("name", StringType(), True),
+        StructField("percent", StringType(), True)
+    ])
+    
+    df = spark.createDataFrame(content, schema = categories_schema)
+    
+    return df
+
+
+def clean_categories(df):
+    """Select columns of interest for the report
+    rename columns and normalize categoryId
+    in categories spark dataframe
+
+    Args:
+        df (Spark Dataframe): categories obtained from URL
+
+    Returns:
+        Spark Dataframe: categories ready to join
+    """
+    
+    # Select columns of interest and rename them
+    df = df.select(F.col("id").alias("categoryId"), 
+                   F.col("name").alias("categoryName"))
+    
+    #Normalize categoryId adding "0" after the dot
+    df = df.withColumn("categoryId", 
+                       F.regexp_replace(F.col("categoryId"), 
+                                        r'\.(?=\d)', '.0'))
+
+    return df
+
+
+
+def get_resources(spark):
+    """Get resources from Firestore
+
+    Args:
+        spark (Spark session): Spark session
+
+    Returns:
+        Spark DataFrame: Resources from Firestore
+    """
+       
+    db = firestore.Client()  
+    collection_ref = db.collection('resources')
+
+    # Get resources 
+    resources = collection_ref.stream()
+
+    # Create a list to hold resources data
+    resources_list = []
+
+    # Iterate through resources and extract data
+    for resource in resources:
+        resource_data = resource.to_dict()
+        resources_list.append(resource_data)
+
+    # Create a Spark DataFrame from the extracted data
+    df = spark.createDataFrame(resources_list)
+    
+    return df
+
+
+
+def clean_resources(df):
+    """Select columns of interest for the report and rename columns
+    in resources spark dataframe
+
+    Args:
+        df (Spark Dataframe): resources obtained from Firestore
+
+    Returns:
+        Spark Dataframe: resources ready to join
+    """
+
+    # Select columns of interest and rename them
+    df = df.select(F.col("id").alias("resourceId"), 
+                   F.col("name").alias("resourceName"), 
+                   F.col("categoryId"))
+
+    return df
+
+
+def get_events(events_bucket_name):
+    """Get events from Cloud Storage
+
+    Args:
+        events_bucket_name (str): bucket name
+ 
+    Returns:
+        Spark Dataframe: events from Storage
+    """
+    
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(events_bucket_name)
+    blobs = bucket.list_blobs(prefix="events/")
+    events = []
+    for blob in blobs:
+        event_data = blob.download_as_string()
+        events.append(json.loads(event_data))
+        
+    events_schema = StructType([
+        StructField("eventId", StringType(), True),
+        StructField("eventTime", StringType(), True),
+        StructField("processTime", StringType(), True),
+        StructField("resourceId", StringType(), True),
+        StructField("userId", StringType(), True),
+        StructField("countryCode", StringType(), True),
+        StructField("duration", IntegerType(), True),
+        StructField("itemPrice", StringType(), True)
+    ])
+
+    df = spark.createDataFrame(events, schema = events_schema)
+    
+    return df
+
+
+def clean_events(df):
+    """Select columns of interest for the report,
+    rename columns and transform processTime
+    in events spark dataframe
+
+    Args:
+        df (Spark Dataframe): events obtained from Storage
+        
+    Returns:
+        Spark Dataframe: events ready to process
+    """
+
+    # Extract first 10 characters from the 'processTime' column "yyyy-mm-dd"
+    df = df.withColumn("processTime", 
+                       F.substring(F.col("processTime"), 1, 10))
+
+    # Select columns of interest and rename them
+    df = df.select(F.col("eventId"), 
+                   F.col("processTime").alias("date"), 
+                   F.col("resourceId"))
+  
+    return df
+
+
+
+def upload_to_gcs(bucket_name, file_name, storage_file_name):
+    """Upload report csv file to Google Cloud Storage
+
+    Args:
+        file (str): "path/to/your/local/file.csv" file name to upload
+        storage_file_name (str): "destination/folder/yourfile.csv"
+        
+    """
+    
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+
+    # Create a new blob object
+    blob = bucket.blob(storage_file_name)
+
+    # Upload the file
+    blob.upload_from_filename(file_name)
+
+
+
+# -------------------- START SPARK SESSION ------------------------------------
+
 spark = SparkSession.builder.master("local")\
     .appName("top10")\
     .getOrCreate()
+    
+    
+# --------------------------- GET DATA  ---------------------------------------
 
-# Define data schemas
-events_schema = StructType([
-    StructField("eventId", StringType(), True),
-    StructField("eventTime", StringType(), True),
-    StructField("processTime", StringType(), True),
-    StructField("resourceId", StringType(), True),
-    StructField("userId", StringType(), True),
-    StructField("countryCode", StringType(), True),
-    StructField("duration", IntegerType(), True),
-    StructField("itemPrice", StringType(), True)
-])
+# Get categories from URL
+categories_url_df = get_categories(spark, categories_url)
+categories_df = clean_categories(categories_url_df)
 
-resources_schema = StructType([
-    StructField("id", StringType(), True),
-    StructField("tenant", StringType(), True),
-    StructField("name", StringType(), True),
-    StructField("categoryId", StringType(), True),
-    StructField("providerId", StringType(), True),
-    StructField("promotion", StringType(), True),
-    StructField("externalId", StringType(), True)
-])
+# Get resources from Firestore
+resources_firestore_df = get_resources(spark)
+resources_df = clean_resources(resources_firestore_df)
 
-categories_schema = StructType([
-    StructField("id", StringType(), True),
-    StructField("name", StringType(), True)
-])
+# Get events from Storage
+events_storage_df = get_events(spark)
+events_df = clean_events(events_storage_df)
 
-# Load JSONL data into Spark DataFrame
-events_df = spark.read.json("data/eventos.jsonl", schema=events_schema)
-resources_df = spark.read.json("data/resources.jsonl", schema=resources_schema)
-categories_df = spark.read.json("data/categories.jsonl", schema=categories_schema)
+ 
 
-# Rename columns
-resources_df = resources_df.withColumnRenamed("name", "resourceName")
-resources_df = resources_df.withColumnRenamed("id", "resourceId")
-categories_df = categories_df.withColumnRenamed("name", "categoryName")
-categories_df = categories_df.withColumnRenamed("id", "categoryId")
-
-#Normalize categoryId adding "0" after the dot
-categories_df = categories_df.withColumn("categoryId", F.regexp_replace(F.col("categoryId"), r'\.(?=\d)', '.0'))
+# ----------------------------- PROCESS DATA ----------------------------------
 
 # Register table alias to allow SQL use
 events_df.createOrReplaceTempView("events")
 resources_df.createOrReplaceTempView("resources")
 categories_df.createOrReplaceTempView("categories")
 
-# Select the columns we need
-events_df = spark.sql("SELECT eventId, processTime, resourceId from events")
-resources_df = spark.sql("SELECT resourceId, resourceName, categoryId from resources")
-categories_df = spark.sql("SELECT categoryId, categoryName from categories")
-
-# Extract first 10 characters from the 'processTime' column to "yyyy-mm-dd"
-events_df = events_df\
-    .withColumn("processTime", F.substring(F.col("processTime"), 1, 10))
-events_df = events_df\
-    .withColumnRenamed("processTime", "date")
-
 # Join events with resources to get resource names and category id
-joined_df = events_df.\
-    join(resources_df, on="resourceId", how="left")
+joined_df = events_df\
+    .join(resources_df, 
+         on="resourceId", 
+         how="left")
 
 # Join with categories to get category name
-joined_df = joined_df.\
-    join(categories_df, on="categoryId", how="left")
+joined_df = joined_df\
+    .join(categories_df, 
+          on="categoryId", 
+          how="left")
     
 # Group by date and resourceId, then count occurrences
-purchase_count_df = events_df.groupBy("date", "resourceId").count()
-purchase_complete_df = joined_df.join(purchase_count_df, on=["date", "resourceId"], how="left")
+purchase_count_df = events_df\
+    .groupBy("date", "resourceId")\
+    .count()
+purchase_complete_df = joined_df.join(purchase_count_df, 
+                                      on=["date", "resourceId"], 
+                                      how="left")
 
 # Rank 10 resources based on purchase count by category and date
-windowSpec = Window.partitionBy("date", "categoryId").orderBy(F.col("count").desc())
+windowSpec = Window.partitionBy("date", "categoryId")\
+                   .orderBy(F.col("count").desc())
 ranked_df = purchase_complete_df\
     .withColumn("position", F.dense_rank().over(windowSpec))\
     .filter(F.col("position") <= 10)\
     .dropDuplicates(['date', 'categoryId', 'resourceId'])\
     .orderBy('date', 'categoryId', 'position')
+
+
+
+# --------------------------- GENERATE REPORTS & UPLOAD -----------------------
 
 # Collect distinct dates into a list
 date_list = [row.date for row in events_df.select("date").distinct().collect()]
@@ -104,14 +282,24 @@ date_list = [row.date for row in events_df.select("date").distinct().collect()]
 for one_day in date_list:
     # Filter by date
     ranked_df.createOrReplaceTempView("ranked")
-    output_df = spark.sql(f"SELECT position, categoryId, categoryName, resourceId, resourceName FROM ranked WHERE ranked.date = '{one_day}'")
-
-    # Selecting fields
-    #ranked_df = ranked_df.select("position", "categoryId", "categoryName", "resourceId", "resourceName")
+    output_df = spark\
+        .sql(f"""SELECT position, categoryId, categoryName, resourceId, resourceName 
+                 FROM ranked 
+                 WHERE ranked.date = '{one_day}'""")
 
     # One report by day is generated in CSV
     report_file_name = f'top10_{one_day}_report.csv'
-    output_df.write.csv(report_file_name, sep="|", header=True, mode="overwrite")
+    output_df.write.csv(report_file_name, 
+                        sep="|", 
+                        header=True, 
+                        mode="overwrite")
+    
+    # Destination name in GCS
+    destination_blob_name = upload_to_gcs(reports_bucket_name, 
+                                          report_file_name + "/part-00000", 
+                                          destination_blob_name)
+    
 
-# Stop SparkSession
+# ------------------------------- STOP SPARK SESSION --------------------------
+
 spark.stop()
