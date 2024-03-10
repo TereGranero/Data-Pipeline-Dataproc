@@ -1,0 +1,20 @@
+{"tenant": "stripe", "id": "CAT.00", "name": "Computer Hardware", "percent": 0.29}
+{"tenant": "stripe", "id": "CAT.01", "name": "Luxury Goods & Jewelry", "percent": 0.23}
+{"tenant": "stripe", "id": "CAT.02", "name": "Commercial Real Estate", "percent": 0.4}
+{"tenant": "stripe", "id": "CAT.03", "name": "Public Policy", "percent": 0.22}
+{"tenant": "stripe", "id": "CAT.04", "name": "Shipbuilding", "percent": 0.32}
+{"tenant": "stripe", "id": "CAT.05", "name": "Think Tanks", "percent": 0.36}
+{"tenant": "stripe", "id": "CAT.06", "name": "Nonprofit Organization Management", "percent": 0.41}
+{"tenant": "stripe", "id": "CAT.07", "name": "Wireless", "percent": 0.22}
+{"tenant": "stripe", "id": "CAT.08", "name": "Transportation / Trucking / Railroad", "percent": 0.35}
+{"tenant": "stripe", "id": "CAT.09", "name": "Broadcast Media", "percent": 0.22}
+{"tenant": "stripe", "id": "CAT.10", "name": "Renewables & Environment", "percent": 0.09}
+{"tenant": "stripe", "id": "CAT.11", "name": "Furniture", "percent": 0.37}
+{"tenant": "stripe", "id": "CAT.12", "name": "Graphic Design", "percent": 0.39}
+{"tenant": "stripe", "id": "CAT.13", "name": "Philanthropy", "percent": 0.3}
+{"tenant": "stripe", "id": "CAT.14", "name": "Dairy", "percent": 0.09}
+{"tenant": "stripe", "id": "CAT.15", "name": "Venture Capital & Private Equity", "percent": 0.31}
+{"tenant": "stripe", "id": "CAT.16", "name": "Staffing and Recruiting", "percent": 0.22}
+{"tenant": "stripe", "id": "CAT.17", "name": "Utilities", "percent": 0.13}
+{"tenant": "stripe", "id": "CAT.18", "name": "Chemicals", "percent": 0.22}
+{"tenant": "stripe", "id": "CAT.19", "name": "Military", "percent": 0.34}

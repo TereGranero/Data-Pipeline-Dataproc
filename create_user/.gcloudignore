@@ -1,0 +1,8 @@
+.git
+.gitignore
+.gcloudignore
+.direnv/
+.pytest_cache/
+__pycache__/
+*test.py
+

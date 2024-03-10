@@ -1,0 +1,5 @@
+flask==2.0.
+Werkzeug==2.2.2
+google-cloud-firestore==2.3.4
+google-cloud-error-reporting==1.4.1
+

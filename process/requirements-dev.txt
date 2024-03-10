@@ -1,0 +1,4 @@
+httpie==2.6.0
+pytest==6.2.5
+pytest-freezegun==0.4.2
+pytest-mock==3.6.1
