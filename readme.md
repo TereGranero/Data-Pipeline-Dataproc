@@ -21,8 +21,15 @@ gcloud config set project stripe-big-3
 `gcloud dataproc clusters delete dataproc1 --region=us-east1`
 
 ## Royalties
+1. Create a topic:
+`gcloud pubsub topics create monthly_report_topic`
 
+2. Deploy Cloud Function
+`gcloud functions deploy royalties --runtime python312 --trigger-topic monthly-report-topic`
 
+3. Create Google Scheduler job:
+`prev_month=$(date -d "last month" +%m)
+gcloud scheduler jobs create pubsub monthly_report_job --schedule "0 0 1 * *" --topic monthly_report_topic --message-body "$prev_month"
 
 ## Monthly reports on platform usage by resource for country and for time zone
 
