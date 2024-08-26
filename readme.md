@@ -1,6 +1,6 @@
 # Readme
 
-## Dayly report on Top 10 best-selling resources in each category
+## Daily report on Top 10 best-selling resources in each category
 
 Follow these steps to execute **top10.py** in DataProc:
 
